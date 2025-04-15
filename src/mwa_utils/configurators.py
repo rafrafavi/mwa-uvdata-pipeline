@@ -9,7 +9,7 @@ from .utils import disk_usage_in_blocks
 
 
 @dataclass
-class _UVDataConfig:
+class UVDataFileSet:
     """Base configuration for all UVData Processing."""
 
     supported_types: ClassVar[set[str]] = {"fits",
@@ -205,7 +205,7 @@ class _UVDataConfig:
     # seems to be only relevant for fits
 
 
-    def get_observations(self) -> Generator[tuple[str, str, list[Path]], None, None]:
+    def observations(self) -> Generator[tuple[str, str, list[Path]], None, None]:
         """Get the first metafits file name stem, if available."""
         assert self.obsid_groups is not None, "obsid_groups is not set"
         for obsid, file_group in self.obsid_groups.items():
@@ -219,7 +219,7 @@ class _UVDataConfig:
 # please do not treat the API as stable until this comment is removed.
 
 @dataclass
-class SSINSConfig(_UVDataConfig):
+class SSINSConfig(UVDataFileSet):
     """Configuration for SSINS (Sky-Subtracted Incoherent Noise Spectra) processing."""
 
     # SSINS.INS options

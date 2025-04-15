@@ -1,4 +1,4 @@
-from .configurators import SSINSConfig
+from .configurators import *  # noqa
 
 # from .processors import *
-from .utils import *
+from .utils import *  # noqa
