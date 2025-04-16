@@ -3,19 +3,48 @@ from collections import defaultdict
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Callable, ClassVar, Literal, Type
 
 from .utils import disk_usage_in_blocks
 
 
+class FileTypeMeta(type):
+    """Class used to dynamically instatiate file type methods based on the supported types"""
+    def __new__(metacls: Type[type], name: str, bases: tuple, attrs: dict) -> type:
+        cls = super().__new__(metacls, name, bases, attrs)
+        supported = getattr(cls, "supported_types", set())
+        for file_type in supported:
+            setattr(cls, f"has_{file_type}", property(metacls.make_has_type_method(file_type)))
+            setattr(cls, file_type, property(metacls.make_get_type_method(file_type)))
+        return cls
+    
+    @staticmethod
+    def make_has_type_method(file_type: str) -> Callable:
+        """Create a method that checks if a file type is present."""
+        def has_type(self) -> bool:
+            return file_type in self.file_groups
+        has_type.__name__ = f"has_{file_type}"
+        has_type.__doc__ = f"Check if the file type {file_type} is present."
+        return has_type
+
+    @staticmethod
+    def make_get_type_method(file_type: str) -> Callable:
+        """Create a method that returns the file type."""
+        def get_type(self) -> list[Path]:
+            return self.file_groups[file_type]
+        get_type.__name__ = file_type
+        get_type.__doc__ = f"Get the files of type {file_type}."
+        return get_type
+        
 @dataclass
-class UVDataFileSet:
+class UVDataFileSet(metaclass=FileTypeMeta):
     """Base configuration for all UVData Processing."""
 
     supported_types: ClassVar[set[str]] = {"fits",
                                            "metafits",
                                            "ms",
                                            "uvfits",
+                                           "uvf", # is an alias of uvfits, TODO: mechanism for alias...
                                            "uvh5"}
 
     # Input files
@@ -23,12 +52,15 @@ class UVDataFileSet:
     file_groups: dict[str, list[Path]] = field(init=False)
     obsid_groups: dict[str, dict[str, list[Path]]] | None = field(init=False)
 
+
+    # TODO: dynamically generate from supported types 
+    # TODO: ensure you update __dir__ accordingly
     # Provided file types
-    has_fits: bool = field(default=False, init=False)
-    has_metafits: bool = field(default=False, init=False)
-    has_ms: bool = field(default=False, init=False)
-    has_uvfits: bool = field(default=False, init=False)
-    has_uvh5: bool = field(default=False, init=False)
+    # has_fits: bool = field(default=False, init=False)
+    # has_metafits: bool = field(default=False, init=False)
+    # has_ms: bool = field(default=False, init=False)
+    # has_uvfits: bool = field(default=False, init=False)
+    # has_uvh5: bool = field(default=False, init=False)
 
     # SS.read options
     diff: bool = True
@@ -72,11 +104,11 @@ class UVDataFileSet:
         self.file_groups = self.group_files_by_extension(self.files)
 
         # Determine composition of files
-        self.has_fits = "fits" in self.file_groups
-        self.has_metafits = "metafits" in self.file_groups
-        self.has_ms = "ms" in self.file_groups
-        self.has_uvfits = "uvfits" in self.file_groups
-        self.has_uvh5 = "uvh5" in self.file_groups
+        # self.has_fits = "fits" in self.file_groups
+        # self.has_metafits = "metafits" in self.file_groups
+        # self.has_ms = "ms" in self.file_groups
+        # self.has_uvfits = "uvfits" in self.file_groups
+        # self.has_uvh5 = "uvh5" in self.file_groups
 
 
         # Add obsid groups for fits processing
@@ -84,7 +116,7 @@ class UVDataFileSet:
             self.obsid_groups = self.group_files_by_obsid_and_extension(self.files)
         # Handle incompatible options
 
-
+        
         if errors := self.validate():
             raise ValueError("Validation errors:\n" + "\n".join(errors))
 
@@ -113,13 +145,15 @@ class UVDataFileSet:
         errors = []
         # Implement any validation logic here
         # Validate file types:
-        if not any([self.has_fits, self.has_ms, self.has_uvfits, self.has_uvh5]):
+        if not any([getattr(self, f'has_{ext}') for ext in self.supported_types]):
             errors.append("No supported file types found. Supported types are: "
                           f"{', '.join(self.supported_types)}")
 
+        # TODO: to be refactored
         if self.has_fits and not self.has_metafits:
             errors.append("FITS files require metafits files to be present.")
 
+        # TODO refactor into validation
         elif (self.has_fits
               and self.obsid_groups is not None
               and not self._has_metafits_for_obs_id(self.obsid_groups)):
@@ -133,9 +167,11 @@ class UVDataFileSet:
                 f"Unsupported file types found: {', '.join(unsupported_types)}"
             )
 
+        # TODO: refactor into suitable processor
         if self.has_uvfits and self.has_uvh5:
             errors.append("Cannot use both uvfits and uvh5 files.")
 
+        
         if self.has_ms and (self.has_uvh5 or self.has_uvfits):
             errors.append("Cannot use both ms and uvfits/uvh5 files.")
 
@@ -149,9 +185,35 @@ class UVDataFileSet:
         return errors
 
 
-
+    def __getattr__(self, item) -> bool | list[Path]:
+        """Dynamically create bool attributes for supported file types"""
+        
+        # is it a file group?
+        if item in self.file_groups:
+            return self.file_groups[item]
+        
+        # is it checking if there is a file of this type?
+        if not item.startswith("has_"):
+            raise AttributeError(f"{type(self)!r} object has no attribute {item!r}")  
+        ext = item[4:]
+        if ext not in self.supported_types:
+            raise AttributeError(f"{type(self)!r} object does not support {ext!r} files")
+        return ext in self.file_groups
+        
+    def has_filetype(self, ext: str) -> bool:
+        """Check if the file type is available."""
+        return getattr(self, f"has_{ext}", False)
+    
+    
+    # def __dir__(self) -> list[str]:
+    #     """Dynamically create a list of attributes for supported file types"""
+    #     return (list(super().__dir__()) 
+    #             + [f"has_{ext}" for ext in self.supported_types]
+    #             + list(self.file_groups.keys())
+    #     )
+    
     @property
-    def kwargs_for_read(self):
+    def kwargs_for_read(self) -> dict:
         return {
         "diff": self.diff,  # difference timesteps
         "remove_coarse_band": self.remove_coarse_band,  # doesn't work with low freq res
@@ -194,7 +256,7 @@ class UVDataFileSet:
         return True
 
     @property
-    def kwargs_for_select(self):
+    def kwargs_for_select(self) -> dict[str, bool]:
         """Provide keyword arguments for the select operation."""
         return {"run_check": False}
 
