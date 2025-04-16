@@ -13,11 +13,15 @@ import numpy as np
 from pyuvdata import UVData
 
 from .configurators import UVDataFileSet
-from .utils import MetafitsContext, get_channel_df, get_fits_path_dataframe
+from .utils import (
+    MetafitsContext,
+    compute_optimal_batches,
+    get_channel_df,
+    get_fits_path_dataframe,
+)
 
 DEFAULT_READERS = []
 
-on_error = Literal["raise", "warn", "ignore"]
 
 def default_reader(reader):
     """Add a reader to the default readers list.
@@ -143,43 +147,9 @@ class FITSProcessor(UVDataFileProcessor):
             return False
         return False
     
-    def _obtain_system_memory_in_gb(self) -> int:
-        """Obtain the system memory in GB."""
-        import psutil
-        mem = psutil.virtual_memory()
-        return mem.total // (1024 ** 3)
+
     
-    def _compute_optimal_batches(self, size_in_gb: int, leakage_factor: int = 7, avail_mem_gb: int | None = None) -> int:
-        """Estimates how many batches a file set should be split into based on the size of the file set and the available memory.
 
-        Parameters
-        ----------
-        size_in_gb
-            The total size of the files to be processed in GB.
-        leakage_factor, optional
-            How much is the maximum memory usage expected to be as a multiple of the total file size, by default 7 (empirically observed worse case)
-        max_memory_gb, optional
-            Maximum available memory in GB, by default None. If None, the system memory is used.
-
-        Returns
-        -------
-            A divisor for splitting data into smaller batches.
-        """
-
-        assert size_in_gb > 0, "File size must be greater than 0"
-        
-        if avail_mem_gb is None:
-            avail_mem_gb = self._obtain_system_memory_in_gb()
-        
-        # size_in_gb = files.get_size_mb() // 1024
-        predicted_max_memory_gb = size_in_gb * leakage_factor
-        if predicted_max_memory_gb <  avail_mem_gb:
-            return 1
-        step_size = (predicted_max_memory_gb // avail_mem_gb) * 2 # -> not a linear reduction in mem
-        print(f"Dynamic step size requested: using {step_size}. Given {avail_mem_gb} GB of memory, "
-              f"and a predicted max memory usage of {predicted_max_memory_gb} GB.")
-        return step_size
-            
 
     def _batched_read(self, 
                       uvd: UVData, 
@@ -194,13 +164,14 @@ class FITSProcessor(UVDataFileProcessor):
         uvd_.read([metafits, *files], read_data=False)
         possible_times = np.unique(uvd.time_array)
         if step_size == 'dynamic':
-            step_size = len(possible_times) // self._compute_optimal_batches(file_set.get_size_mb() // 1024)
+            step_size = len(possible_times) // compute_optimal_batches(file_set.get_size_mb() // 1024)
         del uvd_
         for i in range(0, len(possible_times), step_size):
             uvd += type(uvd).from_file([metafits, *files], 
                                        read_data=True, 
                                        times=possible_times[i:i+step_size])
         return uvd
+    
     def read(self, uvd: UVData, file_set: UVDataFileSet) -> UVData:
         """Read the data into a uvdata object using the given config."""
         # Implement the reading logic for FITS files here

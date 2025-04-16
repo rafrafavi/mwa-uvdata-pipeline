@@ -9,9 +9,43 @@ from astropy.time import Time
 from mwalib import CorrelatorContext, MetafitsContext  # noqa: F401
 from pandas import DataFrame
 
+
 # functions (classifiers) to extract meta data from file names
+def _obtain_system_memory_in_gb() -> int:
+    """Obtain the system memory in GB."""
+    import psutil
+    mem = psutil.virtual_memory()
+    return mem.total // (1024 ** 3)
 
+def compute_optimal_batches(size_in_gb: int, leakage_factor: int = 7, avail_mem_gb: int | None = None) -> int:
+        """Estimates how many batches a file set should be split into based on the size of the file set and the available memory.
 
+        Parameters
+        ----------
+        size_in_gb
+            The total size of the files to be processed in GB.
+        leakage_factor, optional
+            How much is the maximum memory usage expected to be as a multiple of the total file size, by default 7 (empirically observed worse case)
+        max_memory_gb, optional
+            Maximum available memory in GB, by default None. If None, the system memory is used.
+
+        Returns
+        -------
+            A divisor for splitting data into smaller batches.
+        """
+
+        assert size_in_gb > 0, "File size must be greater than 0"
+        
+        if avail_mem_gb is None:
+            avail_mem_gb = self._obtain_system_memory_in_gb()
+        
+        # size_in_gb = files.get_size_mb() // 1024
+        predicted_max_memory_gb = size_in_gb * leakage_factor
+        if predicted_max_memory_gb <  avail_mem_gb:
+            return 1
+        number_of_batches = (predicted_max_memory_gb // avail_mem_gb) * 2 # -> not a linear reduction in mem
+        return number_of_batches
+            
 def _channel_from_gpubox(gpubox: int, metafits: str | Path) -> int:
     """Get channel number from gpubox."""
     ctx = MetafitsContext(str(metafits))    
