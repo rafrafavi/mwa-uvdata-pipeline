@@ -1,13 +1,102 @@
 """Contains utility functions for the MWA pipeline. Focus is on instrumentation and logging of data processing."""
 
 import functools
+import re
+from functools import lru_cache
 from pathlib import Path
 
 from astropy.time import Time
-from mwalib import MetafitsContext
+from mwalib import CorrelatorContext, MetafitsContext  # noqa: F401
 from pandas import DataFrame
 
+# functions (classifiers) to extract meta data from file names
 
+
+def _channel_from_gpubox(gpubox: int, metafits: str | Path) -> int:
+    """Get channel number from gpubox."""
+    ctx = MetafitsContext(str(metafits))    
+    # get the channel number from the metafits file
+    channel = next(
+        (c.rec_chan_number for c in ctx.metafits_coarse_chans if c.gpubox_number == gpubox),
+        None,
+    )
+    if channel is None:
+        raise ValueError(f"GPUBOX {gpubox} not found in metafits file {metafits}.")
+    return channel
+
+def channel_from_filename(filename: str | Path, metafits: str | Path | None = None) -> int | None: # is this fits and metafits only?
+    """Extract channel number from filename."""
+    filename = str(filename)
+    # ch_token = filename.split("_")[-2] 
+    # TODO: Not doing split and instead using search rather than match; Dev to check.
+    match = re.search(r"(gpubox|ch)(\d+)", filename)  
+
+    if match is None:
+        raise ValueError(f"Filename {filename} does not contain channel information.")
+    
+    if match.group(1) == "ch":
+        return int(match.group(2))
+    
+    # when filename contains gpubox, need metafits to get channel number
+    if metafits is None:
+        raise ValueError("When filename only contains gpubox, metafits must be provided.")
+    
+    return _channel_from_gpubox(int(match.group(2)), metafits)
+     
+    
+
+def obsid_from_filename(filename: str | Path) -> str | None:
+    if isinstance(filename, Path):
+        stem = filename.stem
+    else:
+        stem = filename.rsplit(".", 1)[0]
+    return stem.split("_")[0]
+
+    
+@lru_cache(maxsize=128)
+def _get_fits_path_dataframe_cachable(files: frozenset[Path]) -> DataFrame:
+    data = {
+        "obsid": [],
+        "channel": [],
+        "file_path": [],
+        "file_type": [],
+    }
+    fits_files = [f for f in files if f.suffix == ".fits"]
+    metafits_file = next((f for f in files if f.suffix == ".metafits"), None)
+    for file in fits_files:
+        file = Path(file)
+        obsid = obsid_from_filename(file.name)
+        channel = channel_from_filename(file.name, metafits_file)
+        data["obsid"].append(obsid)
+        data["channel"].append(channel)
+        data["file_path"].append(str(file))
+        data["file_type"].append(file.suffix.lstrip('.'))
+    
+    return DataFrame(data)
+    
+def get_fits_path_dataframe(files: list[Path]) -> DataFrame:  
+    """Create a dataframe from a list of fits/metafits files.
+    
+    The dataframe contains the following columns:
+        - obsid
+        - channel
+        - file_path
+        - file_type
+
+    Parameters
+    ----------
+    files
+        A list of file paths to fits/metafits files.
+
+    Returns
+    -------
+        A pandas DataFrame containing the path information
+    """
+    # use frozenset to allow an lru_cache to cache the result
+    return _get_fits_path_dataframe_cachable(frozenset(files))
+    
+
+@lru_cache(maxsize=128)
 def get_channel_df(ctx: MetafitsContext) -> DataFrame:
     """Get channel information from metafits as a DataFrame."""
     header = [
@@ -17,10 +106,9 @@ def get_channel_df(ctx: MetafitsContext) -> DataFrame:
         "chan_centre_hz",
         "chan_end_hz",
     ]
-    df = DataFrame(
+    return DataFrame(
         {h: [getattr(c, h) for c in ctx.metafits_coarse_chans] for h in header}
     )
-    return df
 
 
 def get_antenna_df(ctx: MetafitsContext) -> DataFrame:
